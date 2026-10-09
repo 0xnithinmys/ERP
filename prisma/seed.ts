@@ -47,30 +47,35 @@ async function main() {
     }
   }
 
-  await prisma.setting.create({
-    data: {
-      id: 1,
-      businessName: "Sri Lakshmi Hosiery",
-      address: "14, Kumaran Road, Tiruppur, Tamil Nadu 641601",
-      phone: "+91 98431 22110",
-      email: "sales@srilakshmihosiery.in",
-      gstin: "33ABCDE1234F1Z5",
-      currency: "INR",
-      timezone: TZ,
-      taxEnabled: true,
-      taxRate: "5",
-      taxLabel: "GST",
-      invoiceFooter: "Thank you for shopping with us! Goods once sold can be exchanged within 7 days with invoice.",
-    },
+  // The settings row may already exist (the app creates a default one on first visit).
+  // A production seed (SEED_DEMO=false) keeps it; the demo seed fills in demo details.
+  const demoSettings = {
+    businessName: "Sri Lakshmi Hosiery",
+    address: "14, Kumaran Road, Tiruppur, Tamil Nadu 641601",
+    phone: "+91 98431 22110",
+    email: "sales@srilakshmihosiery.in",
+    gstin: "33ABCDE1234F1Z5",
+    currency: "INR",
+    timezone: TZ,
+    taxEnabled: true,
+    taxRate: "5",
+    taxLabel: "GST",
+    invoiceFooter: "Thank you for shopping with us! Goods once sold can be exchanged within 7 days with invoice.",
+  };
+  const minimal = process.env.SEED_DEMO === "false";
+  await prisma.setting.upsert({
+    where: { id: 1 },
+    create: minimal ? { id: 1 } : { id: 1, ...demoSettings },
+    update: minimal ? {} : demoSettings,
   });
 
   const mkUser = async (name: string, username: string, role: "ADMIN" | "STORE" | "SALES", password: string): Promise<Actor> => {
     const u = await prisma.user.create({ data: { name, username, role, passwordHash: await hashPassword(password) } });
     return { id: u.id, name: u.name, username: u.username, role };
   };
-  const admin = await mkUser("Lakshmi Narayanan", "admin", "ADMIN", process.env.SEED_ADMIN_PASSWORD || "admin123");
-  const store = await mkUser("Murugan K", "store", "STORE", process.env.SEED_STORE_PASSWORD || "store123");
-  const sales = await mkUser("Priya S", "sales", "SALES", process.env.SEED_SALES_PASSWORD || "sales123");
+  const admin = await mkUser(minimal ? "Owner" : "Lakshmi Narayanan", "admin", "ADMIN", process.env.SEED_ADMIN_PASSWORD || "admin123");
+  const store = await mkUser(minimal ? "Store" : "Murugan K", "store", "STORE", process.env.SEED_STORE_PASSWORD || "store123");
+  const sales = await mkUser(minimal ? "Sales" : "Priya S", "sales", "SALES", process.env.SEED_SALES_PASSWORD || "sales123");
 
   // Production setup: settings + users only (no demo products or transactions).
   if (process.env.SEED_DEMO === "false") {
