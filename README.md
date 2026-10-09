@@ -2,6 +2,8 @@
 
 A simple, fast ERP for a hosiery business: products with size/colour variants, barcode scanning (USB/Bluetooth scanners and camera), POS billing, purchases, dispatch with scan verification, customer and supplier returns, damaged stock, stock adjustments, simple manufacturing (BOM → production), stock ledger, reports, roles and an audit log.
 
+> 📘 **Full technical documentation:** [docs/README.md](docs/README.md) — how every feature works end to end, with diagrams.
+
 **Stack:** Next.js 15 (App Router) · TypeScript · Tailwind CSS 4 · shadcn/ui (Radix) · React Hook Form · Zod · TanStack Query/Table · PostgreSQL 16 · Prisma 6 · Vitest · Playwright.
 
 ---
