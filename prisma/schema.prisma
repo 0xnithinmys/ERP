@@ -1,0 +1,733 @@
+// Hosiery ERP — database schema
+// Stock is never edited directly: every change goes through InventoryTransaction
+// (the ledger) and the StockLevel cache is updated in the same DB transaction.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url        = env("DATABASE_URL")
+  // Direct (non-pooled) connection used by migrations. Same as DATABASE_URL locally.
+  directUrl  = env("DIRECT_URL")
+  extensions = [pg_trgm]
+}
+
+// ---------------- Enums ----------------
+
+enum Role {
+  ADMIN
+  STORE
+  SALES
+}
+
+enum ProductType {
+  FINISHED_GOOD
+  RAW_MATERIAL
+}
+
+enum Unit {
+  PCS
+  PAIR
+  PACK
+  DOZEN
+  BOX
+  KG
+  GRAM
+  METER
+  ROLL
+}
+
+enum StockBucket {
+  SELLABLE
+  DAMAGED
+}
+
+enum InventoryTxnType {
+  OPENING
+  PURCHASE
+  PURCHASE_CANCEL
+  SALE
+  SALE_CANCEL
+  CUSTOMER_RETURN
+  SUPPLIER_RETURN
+  ADJUSTMENT
+  PRODUCTION_CONSUME
+  PRODUCTION_OUTPUT
+  PRODUCTION_CANCEL
+}
+
+enum PurchaseStatus {
+  DRAFT
+  RECEIVED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PAID
+  PARTIAL
+  UNPAID
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  BANK
+  CREDIT
+}
+
+enum SaleStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+enum DispatchStatus {
+  PENDING
+  PACKED
+  DISPATCHED
+  COMPLETED
+  CANCELLED
+}
+
+enum ReturnCondition {
+  GOOD
+  DAMAGED
+}
+
+enum AdjustmentReason {
+  DAMAGE
+  DAMAGE_WRITE_OFF
+  LOST
+  FOUND
+  CORRECTION
+  OTHER
+}
+
+enum ProductionStatus {
+  COMPLETED
+  CANCELLED
+}
+
+// ---------------- Auth ----------------
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  username     String    @unique
+  email        String?   @unique
+  passwordHash String
+  role         Role
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions             Session[]
+  auditLogs            AuditLog[]
+  inventoryTxns        InventoryTransaction[]
+  purchasesCreated     Purchase[]             @relation("PurchaseCreatedBy")
+  purchasesReceived    Purchase[]             @relation("PurchaseReceivedBy")
+  sales                Sale[]                 @relation("SaleCreatedBy")
+  salesCancelled       Sale[]                 @relation("SaleCancelledBy")
+  returns              CustomerReturn[]
+  supplierReturns      SupplierReturn[]
+  adjustments          StockAdjustment[]
+  productions          Production[]
+  dispatchesPacked     Dispatch[]             @relation("DispatchPackedBy")
+  dispatchesDispatched Dispatch[]             @relation("DispatchDispatchedBy")
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  userAgent  String?
+  ip         String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ---------------- Settings ----------------
+
+model Setting {
+  id                 Int      @id @default(1)
+  businessName       String   @default("My Hosiery Shop")
+  address            String?
+  phone              String?
+  email              String?
+  gstin              String?
+  currency           String   @default("INR")
+  timezone           String   @default("Asia/Kolkata")
+  taxEnabled         Boolean  @default(false)
+  taxRate            Decimal  @default(0) @db.Decimal(5, 2)
+  taxLabel           String   @default("GST")
+  allowNegativeStock Boolean  @default(false)
+  invoiceFooter      String?  @default("Thank you for shopping with us!")
+  updatedAt          DateTime @updatedAt
+}
+
+/// Sequential document numbers (SAL-00001 etc.), incremented under row lock.
+model Counter {
+  key   String @id
+  value Int    @default(0)
+}
+
+// ---------------- Masters ----------------
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String
+  parentId  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent        Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children      Category[] @relation("CategoryTree")
+  products      Product[]  @relation("ProductCategory")
+  subProducts   Product[]  @relation("ProductSubcategory")
+
+  @@unique([parentId, name])
+  @@index([name])
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  gstin     String?
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases       Purchase[]
+  supplierReturns SupplierReturn[]
+  products        Product[]
+
+  @@index([name])
+  @@index([phone])
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?  @unique
+  email     String?
+  address   String?
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sales   Sale[]
+  returns CustomerReturn[]
+
+  @@index([name])
+}
+
+model Product {
+  id            String      @id @default(cuid())
+  name          String
+  code          String      @unique
+  type          ProductType @default(FINISHED_GOOD)
+  categoryId    String?
+  subcategoryId String?
+  supplierId    String?
+  brand         String?
+  unit          Unit        @default(PAIR)
+  description   String?
+  imageUrl      String?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  category    Category?        @relation("ProductCategory", fields: [categoryId], references: [id], onDelete: SetNull)
+  subcategory Category?        @relation("ProductSubcategory", fields: [subcategoryId], references: [id], onDelete: SetNull)
+  supplier    Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  variants    ProductVariant[]
+
+  @@index([name])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_trgm_idx")
+  @@index([type, isActive])
+  @@index([categoryId])
+  @@index([supplierId])
+}
+
+/// The stock-keeping unit. Every barcode identifies exactly one variant.
+model ProductVariant {
+  id            String   @id @default(cuid())
+  productId     String
+  sku           String   @unique
+  barcode       String?  @unique
+  size          String?
+  color         String?
+  purchasePrice Decimal  @default(0) @db.Decimal(12, 2)
+  sellingPrice  Decimal  @default(0) @db.Decimal(12, 2)
+  minStock      Decimal  @default(0) @db.Decimal(14, 3)
+  reorderLevel  Decimal  @default(0) @db.Decimal(14, 3)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  product            Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  stock              StockLevel?
+  inventoryTxns      InventoryTransaction[]
+  purchaseItems      PurchaseItem[]
+  saleItems          SaleItem[]
+  returnItems        CustomerReturnItem[]
+  supplierReturnItems SupplierReturnItem[]
+  dispatchItems      DispatchItem[]
+  adjustmentItems    StockAdjustmentItem[]
+  bom                BillOfMaterial?
+  bomItems           BillOfMaterialItem[]
+  productionsOutput  Production[]
+  productionItems    ProductionItem[]
+
+  @@unique([productId, size, color])
+  @@index([sku(ops: raw("gin_trgm_ops"))], type: Gin, map: "ProductVariant_sku_trgm_idx")
+  @@index([productId])
+  @@index([size])
+  @@index([color])
+}
+
+// ---------------- Inventory ----------------
+
+/// Cached balances. Only the inventory service writes here, always together
+/// with an InventoryTransaction row, inside a single DB transaction.
+model StockLevel {
+  variantId String   @id
+  onHand    Decimal  @default(0) @db.Decimal(14, 3)
+  damaged   Decimal  @default(0) @db.Decimal(14, 3)
+  updatedAt DateTime @updatedAt
+
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([onHand])
+}
+
+model InventoryTransaction {
+  id           String           @id @default(cuid())
+  variantId    String
+  type         InventoryTxnType
+  bucket       StockBucket      @default(SELLABLE)
+  quantity     Decimal          @db.Decimal(14, 3) // signed: + in, - out
+  balanceAfter Decimal          @db.Decimal(14, 3)
+  unitCost     Decimal?         @db.Decimal(12, 2)
+  refNumber    String
+  note         String?
+  userId       String
+  createdAt    DateTime         @default(now())
+
+  purchaseId       String?
+  saleId           String?
+  customerReturnId String?
+  supplierReturnId String?
+  adjustmentId     String?
+  productionId     String?
+
+  variant        ProductVariant   @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  purchase       Purchase?        @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  sale           Sale?            @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  customerReturn CustomerReturn?  @relation(fields: [customerReturnId], references: [id], onDelete: Restrict)
+  supplierReturn SupplierReturn?  @relation(fields: [supplierReturnId], references: [id], onDelete: Restrict)
+  adjustment     StockAdjustment? @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
+  production     Production?      @relation(fields: [productionId], references: [id], onDelete: Restrict)
+
+  @@index([variantId, createdAt])
+  @@index([createdAt])
+  @@index([type, createdAt])
+  @@index([purchaseId])
+  @@index([saleId])
+  @@index([customerReturnId])
+  @@index([supplierReturnId])
+  @@index([adjustmentId])
+  @@index([productionId])
+}
+
+model StockAdjustment {
+  id             String           @id @default(cuid())
+  number         String           @unique
+  reason         AdjustmentReason
+  note           String
+  userId         String
+  idempotencyKey String?          @unique
+  createdAt      DateTime         @default(now())
+
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items         StockAdjustmentItem[]
+  inventoryTxns InventoryTransaction[]
+
+  @@index([createdAt])
+}
+
+model StockAdjustmentItem {
+  id           String      @id @default(cuid())
+  adjustmentId String
+  variantId    String
+  bucket       StockBucket @default(SELLABLE)
+  quantity     Decimal     @db.Decimal(14, 3) // signed
+  balanceAfter Decimal     @db.Decimal(14, 3)
+
+  adjustment StockAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+  variant    ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([adjustmentId])
+  @@index([variantId])
+}
+
+// ---------------- Purchases ----------------
+
+model Purchase {
+  id             String         @id @default(cuid())
+  number         String         @unique
+  supplierId     String
+  invoiceNumber  String?
+  purchaseDate   DateTime
+  status         PurchaseStatus @default(DRAFT)
+  subtotal       Decimal        @db.Decimal(12, 2)
+  discount       Decimal        @default(0) @db.Decimal(12, 2)
+  taxAmount      Decimal        @default(0) @db.Decimal(12, 2)
+  total          Decimal        @db.Decimal(12, 2)
+  amountPaid     Decimal        @default(0) @db.Decimal(12, 2)
+  paymentStatus  PaymentStatus  @default(UNPAID)
+  notes          String?
+  idempotencyKey String?        @unique
+  createdById    String
+  receivedById   String?
+  receivedAt     DateTime?
+  cancelledAt    DateTime?
+  cancelReason   String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  supplier        Supplier               @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  createdBy       User                   @relation("PurchaseCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  receivedBy      User?                  @relation("PurchaseReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+  items           PurchaseItem[]
+  inventoryTxns   InventoryTransaction[]
+  supplierReturns SupplierReturn[]
+
+  @@index([supplierId, invoiceNumber])
+  @@index([supplierId])
+  @@index([purchaseDate])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model PurchaseItem {
+  id          String  @id @default(cuid())
+  purchaseId  String
+  variantId   String
+  quantity    Decimal @db.Decimal(14, 3)
+  rate        Decimal @db.Decimal(12, 2)
+  discount    Decimal @default(0) @db.Decimal(12, 2)
+  taxRate     Decimal @default(0) @db.Decimal(5, 2)
+  taxAmount   Decimal @default(0) @db.Decimal(12, 2)
+  lineTotal   Decimal @db.Decimal(12, 2)
+  returnedQty Decimal @default(0) @db.Decimal(14, 3)
+
+  purchase            Purchase             @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  variant             ProductVariant       @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  supplierReturnItems SupplierReturnItem[]
+
+  @@index([purchaseId])
+  @@index([variantId])
+}
+
+model SupplierReturn {
+  id             String   @id @default(cuid())
+  number         String   @unique
+  purchaseId     String
+  supplierId     String
+  reason         String
+  totalAmount    Decimal  @db.Decimal(12, 2)
+  userId         String
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  purchase      Purchase               @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  supplier      Supplier               @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items         SupplierReturnItem[]
+  inventoryTxns InventoryTransaction[]
+
+  @@index([purchaseId])
+  @@index([supplierId])
+  @@index([createdAt])
+}
+
+model SupplierReturnItem {
+  id               String      @id @default(cuid())
+  supplierReturnId String
+  purchaseItemId   String
+  variantId        String
+  quantity         Decimal     @db.Decimal(14, 3)
+  bucket           StockBucket @default(SELLABLE)
+  amount           Decimal     @db.Decimal(12, 2)
+
+  supplierReturn SupplierReturn @relation(fields: [supplierReturnId], references: [id], onDelete: Cascade)
+  purchaseItem   PurchaseItem   @relation(fields: [purchaseItemId], references: [id], onDelete: Restrict)
+  variant        ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([supplierReturnId])
+  @@index([purchaseItemId])
+}
+
+// ---------------- Sales ----------------
+
+model Sale {
+  id             String        @id @default(cuid())
+  number         String        @unique
+  customerId     String?
+  customerName   String        @default("Walk-in Customer")
+  status         SaleStatus    @default(CONFIRMED)
+  subtotal       Decimal       @db.Decimal(12, 2) // after line discounts
+  billDiscount   Decimal       @default(0) @db.Decimal(12, 2)
+  taxRate        Decimal       @default(0) @db.Decimal(5, 2)
+  taxAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  total          Decimal       @db.Decimal(12, 2)
+  amountReceived Decimal       @default(0) @db.Decimal(12, 2)
+  amountPaid     Decimal       @default(0) @db.Decimal(12, 2)
+  changeGiven    Decimal       @default(0) @db.Decimal(12, 2)
+  paymentMode    PaymentMode   @default(CASH)
+  paymentStatus  PaymentStatus @default(PAID)
+  refundedAmount Decimal       @default(0) @db.Decimal(12, 2)
+  requiresDispatch Boolean     @default(false)
+  notes          String?
+  idempotencyKey String?       @unique
+  createdById    String
+  cancelledById  String?
+  cancelledAt    DateTime?
+  cancelReason   String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  customer      Customer?              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdBy     User                   @relation("SaleCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  cancelledBy   User?                  @relation("SaleCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
+  items         SaleItem[]
+  inventoryTxns InventoryTransaction[]
+  returns       CustomerReturn[]
+  dispatch      Dispatch?
+
+  @@index([customerId])
+  @@index([createdAt])
+  @@index([status, createdAt])
+}
+
+model SaleItem {
+  id             String  @id @default(cuid())
+  saleId         String
+  variantId      String
+  productName    String
+  variantLabel   String?
+  quantity       Decimal @db.Decimal(14, 3)
+  unitPrice      Decimal @db.Decimal(12, 2)
+  discount       Decimal @default(0) @db.Decimal(12, 2)
+  lineTotal      Decimal @db.Decimal(12, 2) // qty*price - discount
+  netAmount      Decimal @db.Decimal(12, 2) // after bill discount + tax allocation
+  unitCost       Decimal @default(0) @db.Decimal(12, 2)
+  returnedQty    Decimal @default(0) @db.Decimal(14, 3)
+  refundedAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  sale          Sale                 @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  variant       ProductVariant       @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  returnItems   CustomerReturnItem[]
+  dispatchItems DispatchItem[]
+
+  @@index([saleId])
+  @@index([variantId])
+}
+
+// ---------------- Dispatch ----------------
+
+model Dispatch {
+  id             String         @id @default(cuid())
+  number         String         @unique
+  saleId         String         @unique
+  status         DispatchStatus @default(PENDING)
+  carrier        String?
+  trackingNumber String?
+  address        String?
+  notes          String?
+  packedById     String?
+  packedAt       DateTime?
+  dispatchedById String?
+  dispatchedAt   DateTime?
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  sale         Sale           @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  packedBy     User?          @relation("DispatchPackedBy", fields: [packedById], references: [id], onDelete: Restrict)
+  dispatchedBy User?          @relation("DispatchDispatchedBy", fields: [dispatchedById], references: [id], onDelete: Restrict)
+  items        DispatchItem[]
+
+  @@index([status, createdAt])
+}
+
+model DispatchItem {
+  id          String  @id @default(cuid())
+  dispatchId  String
+  saleItemId  String
+  variantId   String
+  requiredQty Decimal @db.Decimal(14, 3)
+  scannedQty  Decimal @default(0) @db.Decimal(14, 3)
+
+  dispatch Dispatch       @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  saleItem SaleItem       @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+  variant  ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@unique([dispatchId, saleItemId])
+}
+
+// ---------------- Customer returns ----------------
+
+model CustomerReturn {
+  id             String      @id @default(cuid())
+  number         String      @unique
+  saleId         String
+  customerId     String?
+  refundAmount   Decimal     @db.Decimal(12, 2)
+  refundMode     PaymentMode @default(CASH)
+  notes          String?
+  userId         String
+  idempotencyKey String?     @unique
+  createdAt      DateTime    @default(now())
+
+  sale          Sale                   @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  customer      Customer?              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items         CustomerReturnItem[]
+  inventoryTxns InventoryTransaction[]
+
+  @@index([saleId])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+model CustomerReturnItem {
+  id         String          @id @default(cuid())
+  returnId   String
+  saleItemId String
+  variantId  String
+  quantity   Decimal         @db.Decimal(14, 3)
+  condition  ReturnCondition
+  reason     String
+  amount     Decimal         @db.Decimal(12, 2)
+
+  return   CustomerReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItem SaleItem       @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+  variant  ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([returnId])
+  @@index([saleItemId])
+}
+
+// ---------------- Manufacturing ----------------
+
+model BillOfMaterial {
+  id         String   @id @default(cuid())
+  variantId  String   @unique // finished good variant
+  outputQty  Decimal  @default(1) @db.Decimal(14, 3)
+  notes      String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  variant     ProductVariant       @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  items       BillOfMaterialItem[]
+  productions Production[]
+}
+
+model BillOfMaterialItem {
+  id         String  @id @default(cuid())
+  bomId      String
+  materialId String // raw material variant
+  quantity   Decimal @db.Decimal(14, 3) // per outputQty of finished goods
+
+  bom      BillOfMaterial @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  material ProductVariant @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@unique([bomId, materialId])
+}
+
+model Production {
+  id             String           @id @default(cuid())
+  number         String           @unique
+  bomId          String
+  variantId      String
+  quantity       Decimal          @db.Decimal(14, 3)
+  status         ProductionStatus @default(COMPLETED)
+  notes          String?
+  userId         String
+  idempotencyKey String?          @unique
+  cancelledAt    DateTime?
+  cancelReason   String?
+  createdAt      DateTime         @default(now())
+
+  bom           BillOfMaterial         @relation(fields: [bomId], references: [id], onDelete: Restrict)
+  variant       ProductVariant         @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items         ProductionItem[]
+  inventoryTxns InventoryTransaction[]
+
+  @@index([createdAt])
+  @@index([variantId])
+}
+
+model ProductionItem {
+  id           String  @id @default(cuid())
+  productionId String
+  materialId   String
+  quantity     Decimal @db.Decimal(14, 3) // consumed
+
+  production Production     @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  material   ProductVariant @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@index([productionId])
+}
+
+// ---------------- Audit ----------------
+
+/// Uploaded product images, stored in the database so they survive on
+/// serverless hosts (Vercel) that have no persistent disk.
+model StoredFile {
+  id        String   @id @default(cuid())
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  summary   String
+  changes   Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([entity, entityId])
+  @@index([userId])
+}

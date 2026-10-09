@@ -1,0 +1,39 @@
+# Production-style stack: PostgreSQL + the ERP app.
+#   docker compose up -d --build
+#   docker compose exec app npm run db:seed   # optional demo data / first users
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: erp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: hosiery_erp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp -d hosiery_erp"]
+      interval: 5s
+      retries: 10
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://erp:${POSTGRES_PASSWORD:-change-me}@db:5432/hosiery_erp?schema=public
+      DIRECT_URL: postgresql://erp:${POSTGRES_PASSWORD:-change-me}@db:5432/hosiery_erp?schema=public
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      INSECURE_COOKIES: ${INSECURE_COOKIES:-false}
+      UPLOAD_DIR: /app/storage/uploads
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
+      SEED_STORE_PASSWORD: ${SEED_STORE_PASSWORD:-store123}
+      SEED_SALES_PASSWORD: ${SEED_SALES_PASSWORD:-sales123}
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads:/app/storage/uploads
+volumes:
+  pgdata:
+  uploads:
