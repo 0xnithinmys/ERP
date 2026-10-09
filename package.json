@@ -17,7 +17,7 @@
     "postinstall": "prisma generate",
     "test:e2e": "playwright test",
     "start:prod": "prisma migrate deploy && next start",
-    "vercel-build": "prisma generate && prisma migrate deploy && next build"
+    "vercel-build": "node scripts/check-deploy-env.mjs && prisma generate && prisma migrate deploy && next build"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
