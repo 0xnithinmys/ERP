@@ -59,10 +59,11 @@ export function CameraScanner({
           BarcodeFormat.ITF,
           BarcodeFormat.QR_CODE,
         ]);
+        // No TRY_HARDER: it costs ~10x per frame (400–800 ms) on the main thread.
         const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 120 });
         if (cancelled || !videoRef.current) return;
         controls = await reader.decodeFromConstraints(
-          { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } } },
+          { video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
           videoRef.current,
           (result) => {
             if (!result) return;
